@@ -1,0 +1,180 @@
+<html>
+    <head>
+        <style>
+            .header {font-weight:600;font-size:24}
+            .uid    {font-family: monospace}
+            .rowodd  {background-color:#c0c0c0}
+            .roweven {background-color:#f0f0f0}
+            .bootloader {color:#0000c0}
+ 
+            .popup_hidden {visibility:hidden;}
+            .popup_visible {visibility:visible;position: absolute;left:30%;top:30%;background-color:#ffffff}
+             
+            div.progressbg {background-color:#a0a0a0;width:150px;height:24px}
+            div.progress {background-color:#00a000;height:24px;width:15px;text-align:center}
+            div.errorpopup {background-color:#a00000;color:#f0f0f0;height:24px;width:150px;text-align:center;vertical-align:middle}
+             
+            td {background-color:inherit}
+        </style>
+        <script src="http://192.168.140.221:3001/dictionary.js"></script>
+        <script>  
+            const cStrSize = 24;
+            const servName = "http://192.168.140.221:3001";
+            const d = document;
+            let ext_sock = null;
+            let fwJSON;
+             
+            function loadJSON() {   
+                var xobj = new XMLHttpRequest();
+                xobj.overrideMimeType("application/json");
+                xobj.open('GET', 'http://192.168.140.221:3001/fwlist.json', true);
+                xobj.withCredentials = false;
+                xobj.setRequestHeader("accept","application/json");
+                xobj.onreadystatechange = function () {
+                    if (xobj.readyState == 4 && xobj.status == "200") {
+                        fwJSON = JSON.parse(xobj.responseText);
+                    }
+                }
+                xobj.send(null);  
+            }
+             
+            function JSONlen(json) {
+                if (json == null) return 0;
+                return Object.keys(json).length;
+            }
+             
+            function ws_open() {
+                let wspath;
+                if (d.location.host=="") 
+                    wspath = "ws://stm32nucleo.local" 
+                else 
+                    wspath = "ws://"+d.location.host;
+                 
+                loadJSON();
+                 
+                let sock = new WebSocket(wspath);
+                sock.binaryType = "arraybuffer";
+                ext_sock = sock;
+                sock.onmessage = function (e) {
+                    let dt = e.data;
+                    let dv = new DataView(dt);
+                 
+                    switch (String.fromCharCode(dv.getUint8(0))) {
+                        case 'L':
+                        tSize = dv.getUint8(1)+dv.getUint8(2)*256;
+                        tRows = (tSize-4)/cStrSize;
+                        let buff = new Array;
+                        for (i=0;i<tRows;i++) {
+                            hw = String.fromCharCode(dv.getUint8(3+i*cStrSize)) + dv.getUint8(4+i*cStrSize) + dv.getUint8(5+i*cStrSize);
+                            hwVer = String.fromCharCode(dv.getUint8(3+i*cStrSize)) + dv.getUint8(4+i*cStrSize) + dv.getUint8(5+i*cStrSize) + String.fromCharCode(dv.getUint8(6+i*cStrSize)) ;
+                            swVer = String.fromCharCode(dv.getUint8(7+i*cStrSize)) + dv.getUint8(8+i*cStrSize) + '.' + dv.getUint8(9+i*cStrSize) + String.fromCharCode(dv.getUint8(10+i*cStrSize)) 
+                            SN = '';
+                            for (j=0;j<12;j++) {
+                                SN += dv.getUint8(11+j+i*cStrSize).toString(16).padStart(2,'0');
+                            }   
+                            addr = "0x"+dv.getUint8(23+i*cStrSize).toString(16); 
+                            bl = dv.getUint8(24+i*cStrSize);
+                            number = dv.getUint8(25+i*cStrSize);
+                            buff[i] = [hwVer,addr,SN,swVer,bl,hw,number];
+                        }
+                        ws_parse(buff,tRows);
+                        break;
+                        case 'P':
+                            show_progress(dv.getUint8(1));
+                        break;
+                        case 'E':
+                            show_error(dv.getUint8(1));
+                        break;
+                    }
+                     
+                }
+            }
+             
+            function ws_update(num,fname) {
+                if (ext_sock) {
+                    ext_sock.send("U"+num+fname);
+                }
+                 
+            }
+             
+            function show_progress(percentage) {
+                show_window = 1;
+                d.getElementById('percentage').innerHTML = " "+percentage+"% ";
+                d.getElementById('bar').style.width = percentage*150/100;
+                d.getElementById('popupfw').className = 'popup_visible';
+                if (percentage == 100) setTimeout(destroy_progress,1000);
+            }
+             
+            function show_error(code) {
+                destroy_progress();
+                d.getElementById('errortext').innerHTML = " Error "+code+"! ";
+                d.getElementById('popuperr').className = 'popup_visible';
+            }
+             
+            function destroy_progress() {
+                d.getElementById('popupfw').className = 'popup_hidden';
+            }
+             
+             
+            function destroy_error() {
+                d.getElementById('popuperr').className = 'popup_hidden';
+            }
+         
+            function ws_parse(buff,rows) {
+                tbl = d.getElementById('mainTbl');
+                str = "<tr class=\"header\"><td>Block</td><td>Addr</td><td>ID</td><td>FW version</td><td width=\"20%\">Actions</td></tr>";
+                for (i=0;i<rows;i++) {
+                    if (i%2) className = 'rowodd'; else className = 'roweven';
+                    str += "<tr class = \""+className+"\">";
+                    let classStr = "";
+                    let dictTitle = "";
+                    for (j=0;j<4;j++) {
+                        if (buff[i][4])                 classStr  = " class=\"bootloader\" "; else classStr = "";
+                        if (j==0 && Dict[buff[i][5]])   dictTitle = " title=\""+Dict[buff[i][5]]+"\" "; else dictTitle = "";
+                         
+                        str += "<td "+dictTitle+classStr+">"+buff[i][j]+"</td>";
+                    }
+                    str += "<td>";
+                    if (JSONlen(fwJSON[buff[i][0]]) == 1) {
+                        str += "<img width=30 height=30 src=\""+servName+"/icons/upgrade.png\" onclick=\"ws_update("+buff[i][6]+",\'"+fwJSON[buff[i][0]][Object.keys(fwJSON[buff[i][0]])[0]].name+"\')\">";
+                    } else if (JSONlen(fwJSON[buff[i][0]]) == 0) {
+                        str += "<img width=30 height=30 src=\""+servName+"/icons/noupgrade.png\"\">";
+                    } else {
+                     
+                    }
+                    str += "<img width=30 height=30 src=\""+servName+"/icons/history.png\">";
+                    str += "<img width=30 height=30 src=\""+servName+"/icons/calib.png\">";
+                    str += "<img width=30 height=30 src=\""+servName+"/icons/check.png\">";
+                    str += "<img width=30 height=30 src=\""+servName+"/icons/play.png\">";
+                    str += "</td></tr>";
+                }
+                tbl.innerHTML = str;
+            }
+             
+            function ws_send(data) {
+             
+            }
+             
+        </script>
+    </head>
+    <body onload="ws_open()">
+        <img src="https://efamedica.ru/bitrix/templates/med_grey_s1/images/logo.png">
+        <h1> List of all connected modules </h1>
+        <table id=mainTbl  width=800>
+            <tr>
+                <td>&nbsp;</td>
+            </tr>
+        </table>
+        <div id=popupfw class=popup_hidden>
+            Uploading firmware...<br>
+            <div id=bar_bg class=progressbg>
+                <div id=bar class=progress><label id=percentage> </label></div>
+            </div>
+        </div>
+        <div id=popuperr class=popup_hidden onclick="destroy_error()">
+            <div class=errorpopup>
+                <label id=errortext ></label>
+            </div>
+        </div>
+    </body>
+</html>
